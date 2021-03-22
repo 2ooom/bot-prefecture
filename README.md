@@ -15,7 +15,6 @@ The script currently requires python 3.6+ and tailored to run on local machine. 
 ```bash
 $ pip install -r requirements.txt
 ```
-
 ### Proxies
 Provide list of proxies to avoid receiving `502 Gateway` from prefecture website after several requests in shoort period. The script has no delay between attempts,
 so it's firing requests as soon as possible (~1 second) making it pretty easy to reach. So it's *strongly recommend* either to add delay (~30 seconds) or add proxies.
@@ -45,3 +44,24 @@ To integrate using their script:
 
 ### Appointment booking
 Avoid typing personal data and unblock parallel booking for several users at a time by populating `form_data` in `user_data.py`.
+
+### RVD configuration
+You hsould have an appointment URL which looks like this:
+```
+https://www.seine-saint-denis.gouv.fr/booking/create/9846/0
+```
+And follow the steps manually *at least once*  to sniff some of the configuration from the Developer Tools, watching for the outgoing AJAX requests that looks like:
+```
+https://www.seine-saint-denis.gouv.fr/ezjscore/call/bookingserver::planning::assign::9846::{config.ajax_id}::{week}
+```
+To set up polling for this specific example you'll need update the following `Config` properties in `config.py`:
+ * `url` - prefecture website (`https://www.seine-saint-denis.gouv.fr`)
+ * `form_id` - RVD type (`9846`)
+ * `ajax_id` - the subtype/giche of the RVD. Could be found when looking at the timetable screens with browser dev-tools
+ * `week_first`, `week_last` - incremental identifier of the week for which you want to get RVD. These IDs very per prefecture and RVD type, same as `ajax_id`
+
+### Run
+To start polling given prefecture website run:
+```bash
+$ python main.py
+```
