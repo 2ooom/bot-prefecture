@@ -6,7 +6,7 @@ Helper script in python to monitor dates availabilities in Prefectures and book 
 2. Support list of proxies that allows to avoid `502 Bad Gateway` server-side throttling (some cheap proxies available on [webshare.io](https://www.webshare.io/?referral_code=932pt9udqsmj)). 
 3. Sending notification via [Telegram Bot](https://core.telegram.org/bots)
 4. Automatic captcha validation using [anti-captcha.com](http://getcaptchasolution.com/6ycdl1mx0u)
-5. Automatic appointment booking for multiple people in parallel using [Selenium Python bindings](https://selenium-python.readthedocs.io/) over [Firefox Geckodriver](https://github.com/mozilla/geckodriver/releases)
+5. Automatic appointment booking for multiple people in parallel.
 
 To access most of these features you'll need to setup related infrastructure yourself, see the section below.
 

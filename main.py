@@ -25,8 +25,7 @@ def get_watcher():
     browsers = []
 
     for data in form_data:
-        br = Browser(config, data, tg_bot, http_client, wait_for_input=True)
-        br.preload()
+        br = Browser(config, data, tg_bot, http_client)
         browsers.append(br)
     metrics = Metrics(export_metrics=False)
     return Watcher(tg_bot, http_client, browsers[0].url_start, browsers, metrics, use_say_cmd=True)

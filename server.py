@@ -49,8 +49,7 @@ http_client = HttpClient(PROXIES_PATH)
 browsers = []
 
 for data in form_data:
-    br = Browser(config, data, tg_bot, http_client, wait_for_input=False)
-    br.preload()
+    br = Browser(config, data, tg_bot, http_client)
     browsers.append(br)
 
 metrics = Metrics(export_metrics=True)
