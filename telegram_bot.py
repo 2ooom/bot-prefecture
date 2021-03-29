@@ -5,6 +5,8 @@ import logging
 import concurrent.futures
 import threading
 
+from utils import get_bin_file_content
+
 class TelegramBot:
     path_phrase = set(['please', 'let', 'me', 'in'])
 
@@ -46,7 +48,7 @@ class TelegramBot:
         self.save_state()
 
     def send_all(self, message):
-        self.logger.info('Sending message to all subscriers...')
+        self.logger.debug('Sending message to all subscriers...')
         try:
             if not self.state:
                 self.load_state()
@@ -60,21 +62,51 @@ class TelegramBot:
 
     def send_single_message(self, message, chat_id):
         # https://core.telegram.org/bots/api#available-methods
-        self.logger.info(f'[Chat {chat_id}]: Sending message...')
+        self.logger.debug(f'[Chat {chat_id}]: Sending message...')
         response = requests.post(f'{self.root_url}/sendMessage', json={
             'chat_id' : chat_id,
             'parse_mode' : 'Markdown',
             'text': message
         })
         if not response.ok:
-            self.logger.info(f'[Chat {chat_id}]: Sendig message failed: `{response.json()}`')
+            self.logger.warning(f'[Chat {chat_id}]: Sendig message failed: `{response.json()}`')
         return response.json()
 
-    def send_photo(self, photo_bytes, message, chat_id):
-        self.logger.info(f'[Chat {chat_id}]: Sending photo...')
+    def send_to_admins(self, message, file_path=None, file_type=None):
+        self.logger.debug('Sending message to all admins...')
+        try:
+            if not self.state:
+                self.load_state()
+            if 'admin_ids' not in self.state:
+                self.logger.error(f'No admins configured:')
+                return
+            chat_ids = self.state['admin_ids']
+            if file_path:
+                file_bytes = get_bin_file_content(file_path)
+                send_method = self.send_single_photo if file_type == 'photo' else self.send_single_document
+                for chat_id in chat_ids:
+                    threading.Thread(target=send_method, args=(file_bytes, message, chat_id)).start()
+            else:
+                for chat_id in chat_ids:
+                    threading.Thread(target=self.send_single_message, args=(message, chat_id)).start()
+        except Exception as ex:
+            self.logger.error(f'Error sending notification:')
+            self.logger.exception(ex)
+
+    def send_single_photo(self, photo_bytes, message, chat_id):
+        self.logger.debug(f'[Chat {chat_id}]: Sending photo...')
         response = requests.post(f'{self.root_url}/sendPhoto?chat_id={chat_id}&caption={message}&parse_mode=Markdown', files={
             'photo': photo_bytes
         })
         if not response.ok:
-            self.logger.info(f'[Chat {chat_id}]: Sendig message failed: `{response.json()}`')
+            self.logger.warning(f'[Chat {chat_id}]: Sendig photo with message "{message}" failed: `{response.json()}`')
+        return response.json()
+    
+    def send_single_document(self, document_bytes, message, chat_id):
+        self.logger.debug(f'[Chat {chat_id}]: Sending document...')
+        response = requests.post(f'{self.root_url}/sendDocument?chat_id={chat_id}&caption={message}&parse_mode=Markdown', files={
+            'document': document_bytes
+        })
+        if not response.ok:
+            self.logger.warning(f'[Chat {chat_id}]: Sendig document with message "{message}" failed: `{response.json()}`')
         return response.json()

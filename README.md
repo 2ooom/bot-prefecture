@@ -19,10 +19,8 @@ $ pip install -r requirements.txt
 Provide list of proxies to avoid receiving `502 Gateway` from prefecture website after several requests in short period. The script has no delay between attempts,
 so it's firing requests as soon as possible (~1 second) making it pretty easy to reach. So it's *strongly recommend* either to add delay (~30 seconds) or add proxies.
 100 :fr: proxies could be bought for ~3$ per month from [webshare.io](https://www.webshare.io/?referral_code=932pt9udqsmj) (referral link).
-Once you have proxies list in [format](https://requests.readthedocs.io/en/master/user/advanced/#proxies) `host:port` or `user:pass@host:port` (one proxy per line):
-1. Put them in `./proxies.txt` file
-2. Run script at least once for the entire list of proxies to populate `./proxies-working.txt`
-3. Replace content of `./proxies.txt` with the content of `./proxies-working.txt` to avoid using fault proxies and speed up date detection
+1. Put proxies in format `host:port` (one proxy per line) in `./proxies.txt`
+2. Set `username` and `password` in `proxy_config` (`user_data.py`) or leave blank for non-restricted access
 
 ### Telegram notifications
 Appointment dates often appear at random times and you won't be sitting in from of your computer, so it's having reactive notification system helps a lot.
@@ -57,8 +55,20 @@ To set up polling for this specific example you'll need update the following `Co
  * `ajax_id` - the subtype/giche of the RVD. Could be found when looking at the timetable screens with browser dev-tools
  * `week_first`, `week_last` - incremental identifier of the week for which you want to get RVD. These IDs very per prefecture and RVD type, same as `ajax_id`
 
-### Run
-To start polling given prefecture website run:
+### Run Locally
+To start polling given prefecture website run from the local machine simply run:
 ```bash
-$ python main.py
+$ python main.py [nb-attempts]
+```
+Last argument allows to specify how many time to run the check, which is useful for debugging (`python main.py 1`)
+
+### Run docker container remotely
+ 1. Register on [Docker Hub](https://hub.docker.com/)
+ 2. Create an image (1 private image is available with free account)
+ 3. Setup any web-hook for Azure/Aws deployment
+ 4. Run:
+
+```bash
+docker image build -t <image name> .
+docker push <image name>:<tag-name>
 ```

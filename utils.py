@@ -1,9 +1,18 @@
 import time
+import os
+import logging
 
-user_agent = "Mozilla/5.0 (Macintosh; Intel Mac OS X 10.16; rv:86.0) Gecko/20100101 Firefox/86.0"
+from datetime import datetime as dt
+
+SESSION_ID_COOKIE = 'eZSESSID'
+DUMPS_FOLDER = './dumps'
 
 def get_file_content(filepath):
     with open(filepath, "r") as f:
+        return f.read()
+
+def get_bin_file_content(filepath):
+    with open(filepath, "rb") as f:
         return f.read()
 
 def with_retry(fn, max_retry, logger, *fn_args, **fn_kwargs):
@@ -19,3 +28,28 @@ def with_retry(fn, max_retry, logger, *fn_args, **fn_kwargs):
 
     logger.error(f"All attempts ({max_retry}) failed. raising exception")
     raise ex_to_raise
+
+
+def save_html(html, name=None):
+    filename = name if name else dt.now().isoformat()
+    html_path = os.path.abspath(
+        os.path.join(DUMPS_FOLDER, f'{filename}.html')
+    )
+    with open(html_path, 'wb') as f:
+        f.write(html)
+    return html_path
+
+def setup_logging(filepath):
+    root_logger = logging.getLogger()
+    root_logger.setLevel(logging.DEBUG)
+    formatter = logging.Formatter('%(asctime)s [%(levelname)-5.5s] [%(name)s] %(message)s', "%H:%M:%S")
+
+    fh = logging.FileHandler(filepath, mode='a')
+    fh.setFormatter(formatter)
+    fh.setLevel(logging.DEBUG)
+    root_logger.addHandler(fh)
+
+    ch = logging.StreamHandler()
+    ch.setFormatter(formatter)
+    ch.setLevel(logging.INFO)
+    root_logger.addHandler(ch)

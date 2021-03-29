@@ -1,0 +1,7 @@
+__pycache__
+log.log
+dumps
+geckodriver.log
+ghostdriver.log
+test
+.DS_Store

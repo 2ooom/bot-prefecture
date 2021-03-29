@@ -1,6 +1,7 @@
 
 import logging
 import os
+import time
 import sys
 import json
 import subprocess
@@ -9,7 +10,7 @@ import threading
 import requests
 
 from users_data import form_data, anticaptcha_api_key
-from utils import get_file_content, with_retry, user_agent
+from utils import get_file_content, with_retry, save_html, SESSION_ID_COOKIE, DUMPS_FOLDER
 from lxml import html
 
 from selenium.webdriver.common.action_chains import ActionChains
@@ -21,24 +22,26 @@ from selenium.common.exceptions import TimeoutException
 from datetime import datetime as dt
 
 class Browser:
-    SESSION_ID_COOKIE = 'eZSESSID'
-    DUMPS_FOLDER = './dumps'
-    NB_RETRIES = 10
+    NB_RETRIES = 5
     anticaptcha_js = get_file_content('./anticaptcha.js').replace('anti_captcha_api_key', anticaptcha_api_key)
 
-    def __init__(self, config, form_data, tg_bot, proxies):
+    def __init__(self, config, form_data, tg_bot, http_client, wait_for_input=True):
         self.url_base = f'{config.url}/booking/create/{config.form_id}'
         self.url_start = f'{self.url_base}/0'
         self.form_data = form_data
+        self.config = config
         self.tg_bot = tg_bot
-        self.proxies = proxies
         self.driver = selenium.webdriver.Firefox()
         self.driver.maximize_window()
-        self.logger = logging.getLogger("Browser")
+        self.user_email = form_data['email']
+        self.logger = logging.getLogger(f"Browser {self.user_email}")
         self.form_submit_started = False
         self.form_submit_lock = threading.Lock()
         self.session_id = ""
-        self.proxy_index = 0
+        self.http_client = http_client
+        self.wait_for_input = wait_for_input
+        self.rdv_taken = False
+        self.updated_state = False
 
     def preload(self):
         self.set_preferences()
@@ -51,12 +54,14 @@ class Browser:
         preferences_js = get_file_content('./firefox_preference.js')
         self.driver.execute_script(preferences_js)
 
-    def get_start_url(self):
-        return self.url_start
-
     def go_to_start(self):
-        self.logger.info(f'Page 1: Loading "{self.get_start_url()}"')
-        self.driver.get(self.get_start_url())
+        self.logger.info(f'Page 1: Loading "{self.url_start}"')
+        self.driver.get(self.url_start)
+        #self.take_screenshot(f'🛫 Starting to watch for dates on this url: {self.url_start}')
+
+    def log_step(self, message):
+        self.logger.warning(message)
+        self.tg_bot.send_to_admins("\n".join([f'`{self.user_email}`:', message]))
 
     def click(self, e):
         self.driver.execute_script(f'window.scrollTo(0, {e.location["y"]})')
@@ -71,185 +76,209 @@ class Browser:
 
     def get_session_id(self):
         cookies = self.driver.get_cookies()
-        session_cookie = list(filter(lambda c: c['name'] == Browser.SESSION_ID_COOKIE, cookies))
+        session_cookie = list(filter(lambda c: c['name'] == SESSION_ID_COOKIE, cookies))
         return session_cookie[0]['value']
 
-    def save_dump(self):
+    def save_step(self, comment=''):
+        self.logger.warning(comment)
+        self.take_screenshot(comment)
+        html_path = save_html(self.driver.page_source.encode('utf8'))
+        self.tg_bot.send_to_admins("\n".join([f'`{self.user_email}`:', comment]), html_path, 'html')
+
+    def take_screenshot(self, comment=''):
         timestamp = dt.now().isoformat()
-        screenshot_fname = os.path.abspath(
-            os.path.join(Browser.DUMPS_FOLDER, f'{timestamp}.png')
+        screenshot_path = os.path.abspath(
+            os.path.join(DUMPS_FOLDER, f'{timestamp}.png')
         )
-        self.driver.save_screenshot(screenshot_fname)
-        self.save_html(self.driver.page_source.encode('utf8'), timestamp)
-
-        cookies_fname = os.path.abspath(
-            os.path.join(Browser.DUMPS_FOLDER, f'{timestamp}-cookies.json')
-        )
-        with open(cookies_fname, 'w') as f:
-            f.write(json.dumps(self.driver.get_cookies()))
-
-    def save_html(self, html, name=None):
-        filename = name if name else dt.now().isoformat()
-        page_source_fname = os.path.abspath(
-            os.path.join(Browser.DUMPS_FOLDER, f'{filename}.html')
-        )
-        with open(page_source_fname, 'wb') as f:
-            f.write(html)
-
-    def get_next_proxy_from_list(self):
-        self.proxy_index = self.proxy_index + 1 if self.proxy_index < len(self.proxies) - 1 else 0
-        return self.proxies[self.proxy_index]
+        self.driver.save_screenshot(screenshot_path)
+        self.tg_bot.send_to_admins("\n".join([f'`{self.user_email}`:', comment]), screenshot_path, 'photo')
 
     def post(self, url, data):
-        proxy_url = self.get_next_proxy_from_list()
-        return requests.post(
+        return self.http_client.req(
+            'post',
             url,
-            cookies={Browser.SESSION_ID_COOKIE: self.session_id},
+            max_retries=Browser.NB_RETRIES,
+            cookies={SESSION_ID_COOKIE: self.session_id},
             headers={
                 "ogirin": url,
-                "user-agent": user_agent,
                 "referer": url,
             },
-            data=data,
-            timeout=7,
-            proxies={'http': proxy_url, 'https': proxy_url}
+            data=data
         )
 
     def update_internal_server_state(self):
-        try:
-            def step_0():
-                self.logger.info('Step 0: Validating conditions')
-                page = self.post(
-                    self.url_start,
-                    {
-                        'condition': 'on',
-                        'nextButton': 'Effectuer+une+demande+de+rendez-vous',
-                    }
-                )
-                tree = html.fromstring(page.content)
-                next_button = tree.xpath("//input[@name='nextButton']")
-                if not len(next_button):
-                    self.save_html(page.content)
-                    raise Exception("Wrong response. Retrying ...")
-                if next_button[0].value != "Etape suivante":
-                    self.save_html(page.content)
-                    raise Exception("Step 0: Dates not available :(")
-                return (tree, next_button)
+        if self.updated_state:
+            self.log_step('Step 0-3: skipping. Internal server state already updated.')
+            return
+        self.log_step('Step 0: Validating conditions')
+        page = self.post(
+            self.url_start,
+            {
+                'condition': 'on',
+                'nextButton': 'Effectuer+une+demande+de+rendez-vous',
+            }
+        )
+        tree = html.fromstring(page.content)
+        next_button = tree.xpath("//input[@name='nextButton']")
+        if not len(next_button):
+            save_html(page.content)
+            raise Exception("Step 0: Next button not found")
+        if next_button[0].value != "Etape suivante":
+            save_html(page.content)
+            raise Exception("Step 0: Dates not available :(")
 
-            (tree, next_button) = with_retry(step_0, Browser.NB_RETRIES, self.logger)
-
-            planning_input = tree.xpath("//input[@name='planning']")
-            # for test only
-            if len(planning_input):
-                def step_1(next_button):
-                    self.logger.info('Step 1: Selecting RDV type')
-                    page = self.post(
-                        f"{self.url_base}/1",
-                        {
-                            'planning': planning_input[-1].attrib['value'],
-                            'nextButton': next_button[0].value,
-                        }
-                    )
-                    tree = html.fromstring(page.content)
-                    next_button = tree.xpath("//input[@name='nextButton']")
-                    if not len(next_button):
-                        self.save_html(page.content)
-                        raise Exception('Wrong response. Retrying ..')
-                    if next_button[0].value != "Etape suivante":
-                        self.save_html(page.content)
-                        raise Exception("Step 1: Dates not available :(")
-                    return (tree, next_button)
-
-                (tree, next_button) = with_retry(step_1, Browser.NB_RETRIES, self.logger, next_button)
-            else:
-                self.logger.info('Step 1: Implicit')
-
-            def step_3(next_button):
-                self.logger.info('Step 3: Submitting form and implicitly choosing RDV type')
-                page = self.post(
-                    f"{self.url_base}/3",
-                    {'nextButton': next_button[0].value}
-                )
-                tree = html.fromstring(page.content)
-                etape4_active = tree.xpath("//img[contains(@src, '/etape_4r.png')]")
-                if not len(etape4_active):
-                    self.save_html(page.content)
-                    raise Exception("Step 3: Dates not available :(")
-
-            with_retry(step_3, Browser.NB_RETRIES, self.logger, next_button)
-            return True
-        except Exception as ex:
-            self.logger.exception(ex)
-            return False
-
-    def update_internal_server_state_selenium(self):
-        self.logger.info("Using selenium for fallback")
-        self.logger.info('Step 0: Validating conditions')
-        self.go_to_start()
-        #checkbox
-        self.click(self.driver.find_element_by_xpath('//*[@id="condition"]'))
-        # next button
-        self.click(self.driver.find_element_by_xpath('//*[@id="submit_Booking"]/input[1]'))
-        next_button = wait(self.driver, 20).until(lambda d: d.find_element_by_xpath("//*[@value='Etape suivante']"))
-        self.save_dump()
-        planning = self.driver.find_elements_by_xpath("//input[@name='planning']")
-        if len(planning):
-            self.logger.info('Step 1: Selecting RDV type')
-            self.click(planning[-1])
-            self.click(self.driver.find_element_by_xpath("//input[@name='nextButton']"))
-            # waiting for next page to appear
-            wait(self.driver, 20).until(lambda d: d.find_element_by_xpath("//img[contains(@src, '/etape_3r.png')]"))
-            self.save_dump()
+        planning_input = tree.xpath("//input[@name='planning']")
+        # for test only
+        if len(planning_input):
+            self.log_step('Step 1: Selecting RDV type')
+            page = self.post(
+                f"{self.url_base}/1",
+                {
+                    'planning': planning_input[-1].attrib['value'],
+                    'nextButton': next_button[0].value,
+                }
+            )
+            tree = html.fromstring(page.content)
+            next_button = tree.xpath("//input[@name='nextButton']")
+            if not len(next_button):
+                save_html(page.content)
+                raise Exception('Step 1: Next button not found')
+            if next_button[0].value != "Etape suivante":
+                save_html(page.content)
+                raise Exception("Step 1: Dates not available :(")
         else:
             self.logger.info('Step 1: Implicit')
 
-        self.logger.info('Step 3: Submitting form and implicitly choosing RDV type')
-        self.click(self.driver.find_element_by_xpath("//input[@name='nextButton']"))
-        wait(self.driver, 20).until(lambda d: d.find_element_by_xpath("//img[contains(@src, '/etape_4r.png')]"))
-        self.logger.info('Step 4: Dates table')
-        self.save_dump()
+        self.log_step('Step 3: Submitting form and implicitly choosing RDV type')
+        page = self.post(
+            f"{self.url_base}/3",
+            {'nextButton': 'Etape suivante'}
+        )
+        tree = html.fromstring(page.content)
+        etape4_active = tree.xpath("//img[contains(@src, '/etape_4r.png')]")
+        if not len(etape4_active):
+            save_html(page.content)
+            raise Exception("Step 3: Dates not available :(")
+        self.updated_state = True
 
-    def submit_form(self, date_url):
+    def get_captcha_solution(self):
+        task_resp = requests.post('https://api.anti-captcha.com/createTask', json={
+            'clientKey' : anticaptcha_api_key,
+            'task':
+                {
+                    "type":"RecaptchaV2TaskProxyless",
+                    "websiteURL": self.config.url,
+                    "websiteKey": self.config.recatcha_sitekey
+                }
+        })
+        task_id = task_resp.json()['taskId']
+        print('task_id', task_id)
+        print("Anticaptcha response: ", task_resp.json())
+        g_captcha_response = None
+        for i in range(0, 60*2*2):
+            resp = requests.post('https://api.anti-captcha.com/getTaskResult', json={
+                "clientKey": anticaptcha_api_key,
+                "taskId": task_id
+            }).json()
+            print('resp[status]', resp['status'])
+            print("Anticaptcha response: ", resp)
+            if 'status' in resp and resp['status'] == 'ready':
+                g_captcha_response = resp['solution']['gRecaptchaResponse']
+                break
+            time.sleep(0.5)
+            if i % 20 == 0:
+                self.logger.warning(f'Anticaptcha status: {resp["status"]}. waiting 10 sec..')
+
+        if not g_captcha_response:
+            raise Exception("Anticaptcha not solved in 2 min.")
+        return g_captcha_response
+
+    def book_date(self, date_url):
+        try:
+            self.log_step(f'Step 4: Via Http getting "{date_url}"')
+            page = self.http_client.get(
+                date_url,
+                max_retries=Browser.NB_RETRIES,
+                cookies={SESSION_ID_COOKIE: self.session_id},
+                headers={
+                    "ogirin": date_url,
+                    "referer": date_url,
+                })
+            if not page:
+                raise Exception('Step 4: Failed to load')
+
+            self.log_step(f'✅ Step 4: Via Http loaded {date_url}')
+            self.log_step('Step 6: Solving anticaptcha')
+            g_captcha_response = self.get_captcha_solution()
+            self.log_step('✅ Step 6: Anticaptcha solved')
+            page = self.post(
+                f"{self.url_base}/6",
+                {
+                    'g-recaptcha-response': g_captcha_response,
+                    'nextButton': 'Etape+suivante'
+                })
+            tree = html.fromstring(page.content)
+            next_button = tree.xpath("//input[@name='nextButton']")
+            if not len(next_button):
+                save_html(page.content)
+                raise Exception('Step 6: Next button not found')
+            if next_button[0].value != "Etape suivante":
+                save_html(page.content)
+                raise Exception("Step 6: Dates not available :(")
+            self.log_step('✅ Step 6: Anticaptcha accepted')
+            self.log_step('Step 8: Submitting form')
+            page = self.post(
+                f"{self.url_base}/8",
+                {
+                    **self.form_data,
+                    'nextButton': 'Etape+suivante'
+                })
+            tree = html.fromstring(page.content)
+            message_sent = tree.xpath("//li[contains(text(), 'Un message électronique vous a été envoyé.')]")
+            if not len(message_sent):
+                save_html(page.content)
+                raise Exception('Step 8: Message not sent')
+            self.log_step('✅ Step 8: Submitted. Check email')
+            return True
+        except Exception as ex:
+            self.log_step('☠️ Booking date via http did not work. Falling back to selenium...')
+            self.logger.exception(ex)
+            return False
+
+    def submit_form(self, date_url, date_chosen, timestamp):
         with self.form_submit_lock:
             if self.form_submit_started:
                 self.logger.info('Form submit already started. Skipping...')
                 return
             else:
-                self.logger.info('Form submitting started...')
                 self.form_submit_started = True
         try:
-            if not self.update_internal_server_state():
-                self.update_internal_server_state_selenium()
-            self.form_submit_started = True
-            def step_4():
-                self.logger.warning(f'Getting "{date_url}"...')
-                self.driver.get(date_url)
-                self.logger.warning('Step 4: enter captcha, click next and wait for next page to load')
-                self.save_dump()
+            self.log_step(f'Form submit started. Date: {date_chosen} (unix timestamp: {timestamp})')
+            self.update_internal_server_state()
+            date_booked = self.book_date(date_url)
+            if not date_booked:
+                def step_4():
+                    self.log_step(f'Step 4: Getting "{date_url}"')
+                    self.driver.get(date_url)
+                    self.save_step(f'Step 4: Loaded {date_url}')
 
-            with_retry(step_4, Browser.NB_RETRIES, self.logger)
+                with_retry(step_4, Browser.NB_RETRIES, self.logger)
 
-            def step_5():
                 # following these steps https://antcpt.com/eng/download/headless-captcha-solving.html
                 self.driver.execute_script(Browser.anticaptcha_js)
-                self.logger.info("Step 4. Added anticaptcha ")
-                self.save_dump()
-                found_element = wait(self.driver, 24*60*60).until(lambda d: d.find_element_by_xpath("//*[contains(@class, 'antigate_solver') and contains(@class, 'solved')] | //img[contains(@src, '/etape_8r.png')]"))
-                self.save_dump()
+                self.save_step("Step 4. Added anticaptcha ")
+                found_element = wait(self.driver, 5*60).until(lambda d: d.find_element_by_xpath("//*[contains(@class, 'antigate_solver') and contains(@class, 'solved')] | //img[contains(@src, '/etape_8r.png')]"))
                 # captcha was solved automatically:
                 if found_element.tag_name.lower() != 'img':
-                    self.logger.info("Step 4. Captcha solved automatically.")
+                    self.log_step("Step 4. Captcha solved automatically going to next page.")
                     self.click(self.driver.find_element_by_xpath("//input[@name='nextButton']"))
                     wait(self.driver, 30).until(lambda d: d.find_element_by_xpath("//img[contains(@src, '/etape_8r.png')]"))
-                    self.save_dump()
                 else:
-                    self.logger.info("Step 4. Captcha solved manually.")
+                    self.log_step("Step 4. Captcha solved manually.")
 
-            with_retry(step_5, Browser.NB_RETRIES, self.logger)
+                self.log_step('Step 5: entering user data')
 
-            def step_6():
                 # Personal data input loading
-                self.logger.warning('Step 5: entering user data')
                 for field, value in self.form_data.items():
                     try:
                         el = self.driver.find_element_by_xpath(f"//*[@name='{field}']")
@@ -259,27 +288,25 @@ class Browser:
                         self.logger.error(f"Failed to enter '{field}''. Error: ")
                         self.logger.exception(err)
 
+                self.save_step('Step 5: entered form data')
                 self.click(self.driver.find_element_by_xpath("//input[@name='nextButton']"))
                 # waiting for validation page
                 wait(self.driver, 20).until(lambda d: d.find_element_by_xpath("//img[contains(@src, '/etape_9r.png')]"))
 
-            with_retry(step_6, Browser.NB_RETRIES, self.logger)
+                self.save_step('Step 6: Validation')
+                self.click(self.driver.find_element_by_xpath("//input[@type='submit']"))
+                self.save_step('Step 6: Submitted')
+                wait(self.driver, 20).until_not(lambda d: d.find_element_by_xpath("//img[contains(@src, '/etape_9r.png')]"))
 
-            self.logger.warning('Step 6: validation')
-            self.save_dump()
-            self.click(self.driver.find_element_by_xpath("//input[@type='submit']"))
-            self.logger.warning('Step 6: Submitted')
-            print("All finished. Enter to restart")
-            input()
+            self.save_step(f'💚 RDV Taken @ `{date_chosen}` (unix timestamp: {timestamp})')
+            self.rdv_taken = True
         except Exception as err:
             self.logger.error("phfew. Error: ")
             self.logger.exception(err)
-        print("Press enter twice to continue in case of false-positive...")
-        input()
-        print("Press enter again to confirm")
-        input()
-        self.go_to_start()
+        if self.wait_for_input:
+            print("Waiting 1 min just in case")
+            time.sleep(60)
         with self.form_submit_lock:
             self.logger.warning('Resetting form submit status')
-            self.form_submit_started = True
+            self.form_submit_started = False
 

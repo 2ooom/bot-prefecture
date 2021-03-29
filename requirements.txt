@@ -1,0 +1,5 @@
+lxml==4.6.2
+requests==2.25.1
+selenium==3.141.0
+flask==1.1.2
+opencensus_ext_azure==1.0.7
