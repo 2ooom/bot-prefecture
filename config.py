@@ -5,8 +5,8 @@ config_hs = Config(
     url = 'https://www.hauts-de-seine.gouv.fr',
     form_id = 13525,
     ajax_id = 14202,
-    week_first = 182, # 19-25 avril
-    week_last = 190, # 26 avril - 02 mai
+    week_first = 175, # 11-18 avril
+    week_last = 183, # 26 avril - 02 mai
     recatcha_sitekey = '6LcIY58UAAAAAFhtNq8BzG8mriWbWtafuI3WhIL7',
 )
 

@@ -2,3 +2,6 @@ lxml==4.6.2
 requests==2.25.1
 flask==1.1.2
 opencensus_ext_azure==1.0.7
+google-api-python-client==2.0.2
+google-auth-httplib2==0.1.0
+google-auth-oauthlib==0.4.4

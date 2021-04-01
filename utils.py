@@ -1,6 +1,7 @@
 import time
 import os
 import logging
+import json
 
 from datetime import datetime as dt
 
@@ -10,6 +11,10 @@ DUMPS_FOLDER = './dumps'
 def get_file_content(filepath):
     with open(filepath, "r") as f:
         return f.read()
+
+def get_json_file_content(filepath):
+    with open(filepath, "r") as f:
+        return json.load(f)
 
 def get_bin_file_content(filepath):
     with open(filepath, "rb") as f:

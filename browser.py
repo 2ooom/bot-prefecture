@@ -175,7 +175,7 @@ class Browser:
                 'nextButton': 'Etape+suivante'
             })
         tree = html.fromstring(page.content)
-        message_sent = tree.xpath("//li[contains(text(), 'Un message électronique vous a été envoyé.')]")
+        message_sent = tree.xpath("//li[contains(text(), 'Vous disposez de 60 minutes pour confirmer')]")
         if not len(message_sent):
             save_html(page.content)
             self.log_step('☠️ Step 8: Not submitted :(')
