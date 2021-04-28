@@ -11,11 +11,13 @@ from utils import save_html
 class HttpClient:
     USER_AGENT = "Mozilla/5.0 (Macintosh; Intel Mac OS X 10.16; rv:86.0) Gecko/20100101 Firefox/86.0"
     REQ_TIMEOUT = 7
+    DEFAULT_HEADERS = {'user-agent': USER_AGENT}
+    PROXIES_PATH = './proxies.txt'
 
-    def __init__(self, proxies_path):
+    def __init__(self):
         self.logger = logging.getLogger("Http")
-        self.proxies_path = proxies_path
-        self.proxies = self.get_proxies(proxies_path)
+        self.proxies_path = HttpClient.PROXIES_PATH
+        self.proxies = self.get_proxies(self.proxies_path)
         self.proxies_queue = deque(sorted(self.proxies, key=lambda _: random.random()))
 
     def get_proxies(self, proxies_path):
@@ -38,12 +40,11 @@ class HttpClient:
         else:
             return f"http://{proxy_endpoint}"
 
-    def get(self, url, max_retries=1, cookies=None, headers={}, data=None):
-        return self.req('get', url, max_retries, cookies=cookies, headers=headers, data=data)
+    def get(self, url, max_retries=1, cookies=None, headers={}, data=None, first_attempt_with_proxy=True):
+        return self.req('get', url, max_retries, cookies=cookies, headers=headers, data=data, first_attempt_with_proxy=first_attempt_with_proxy)
 
-    def req(self, method, url, max_retries=1, cookies=None, headers={}, data=None):
-        proxy_url = self.get_next_proxy_url()
-
+    def req(self, method, url, max_retries=1, cookies=None, headers={}, data=None, first_attempt_with_proxy=True):
+        proxy_url = self.get_next_proxy_url() if first_attempt_with_proxy else None
         last_response = None
 
         for attempt in range(0, max_retries):
@@ -55,11 +56,11 @@ class HttpClient:
                     cookies=cookies,
                     headers={
                         **headers,
-                        "user-agent": HttpClient.USER_AGENT,
+                        **HttpClient.DEFAULT_HEADERS,
                     },
                     data=data,
                     timeout=HttpClient.REQ_TIMEOUT,
-                    proxies={'http': proxy_url, 'https': proxy_url}
+                    proxies={'http': proxy_url, 'https': proxy_url} if proxy_url else None
                 )
                 if not last_response.ok:
                     self.logger.warning(f"{attempt_text} Failed with status code {last_response.status_code}")
@@ -74,7 +75,7 @@ class HttpClient:
                         self.logger.warning(f"{attempt_text} 502 - Bad Gateway")
                         time.sleep(3)
                     else:
-                        save_html(date_table.content)
+                        save_html(last_response.content)
                     if attempt < max_retries - 1:
                         # setting new proxy
                         proxy_url = self.get_next_proxy_url()
@@ -88,20 +89,3 @@ class HttpClient:
                     self.logger.exception(ex)
                 time.sleep(attempt + 1)
         return last_response
-
-
-    def check_once(proxy_endpoint, week, logger, browsers):
-        proxy_url = f"http://{proxy_config.username}:{proxy_config.password}@{proxy_endpoint}"
-        try:
-            date_table = requests.get(
-                f"{config.url}/ezjscore/call/bookingserver::planning::assign::{config.form_id}::{config.ajax_id}::{week}",
-                timeout=REQ_TIMEOUT,
-                headers={"user-agent": user_agent},
-                proxies={'http': proxy_url, 'https': proxy_url}
-            )
-        except ReadTimeout as timeout_ex:
-            logger.warning('Timeout...')
-            return
-        except ProxyError as proxy_timeout_ex:
-            logger.warning('Proxy side timeout...')
-            return
