@@ -1,4 +1,6 @@
-form_data = {
+from collections import namedtuple
+
+form_data = [{
     'email': 'xxxx@gmail.com',
     'emailcheck': 'xxxx@gmail.com',
     'firstname': 'Xxx',
@@ -6,7 +8,7 @@ form_data = {
     'number_agdref': '1234567890',
     'end_date_validity': 'dd/mm/yyyy',
     'post_code': 'xxxxx',
-}
+}]
 
 anticaptcha_api_key = 'xxx'
 
