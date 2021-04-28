@@ -1,19 +1,17 @@
 import logging
-import sys
 import os
-import json
 import threading
 
 from watcher import Watcher
+from watcher_multislot import WatcherMultislot
 from browser import Browser
 from telegram_bot import TelegramBot
 from http_client import HttpClient
-from users_data import form_data, anticaptcha_api_key, telegram_bot_token, proxy_config, azure_insights
+from users_data import form_data, azure_insights
 
-from config import config
+from config import HAUTS_DE_SEINE_BIOMETRY_CONFIG
 
-from main import DB_PATH, PROXIES_PATH
-from utils import DUMPS_FOLDER
+from utils import DUMPS_FOLDER, WEBSITE_HOSTNAME, now
 from datetime import datetime as dt
 from metrics import Metrics
 from credentials_store import CredentialsStore
@@ -29,8 +27,6 @@ from flask import render_template
 from google_auth_oauthlib.flow import Flow
 
 GMAIL_READONLY_SCOPE = 'https://www.googleapis.com/auth/gmail.readonly'
-OAUTH2_CLIENT_SECRET_PATH = './google_client_secret.json'
-OATH2_CREDENTIALS_STORE = './credentials.json'
 
 def setup_logging():
     root_logger = logging.getLogger()
@@ -46,6 +42,9 @@ def setup_logging():
     az.setLevel(logging.INFO)
     root_logger.addHandler(az)
 
+def start_mail_checker_thread(email, store, config, tg_bot):
+    mail_checker = MailChecker(store, email, config, tg_bot)
+    return mail_checker.start_loop()
 
 setup_logging()
 
@@ -56,26 +55,22 @@ logger = logging.getLogger("Server")
 if not os.path.exists(DUMPS_FOLDER):
     os.makedirs(DUMPS_FOLDER)
 
+if not os.environ.get(WEBSITE_HOSTNAME):
+    os.environ[WEBSITE_HOSTNAME] = f'localhost-server-{now()}'
+
 service_started = dt.now()
-tg_bot = TelegramBot(telegram_bot_token, DB_PATH)
-http_client = HttpClient(PROXIES_PATH)
-store = CredentialsStore(OAUTH2_CLIENT_SECRET_PATH, OATH2_CREDENTIALS_STORE)
-
-browsers = []
-emails = []
-for data in form_data:
-    br = Browser(config, data, tg_bot, http_client)
-    emails.append(data['email'])
-    browsers.append(br)
-
-mail_checker = MailChecker(store, emails, config)
-mail_checker_thread = threading.Thread(target=mail_checker.start_loop, daemon=True)
-mail_checker_thread.start()
+tg_bot = TelegramBot()
+http_client = HttpClient()
+store = CredentialsStore()
+config = HAUTS_DE_SEINE_BIOMETRY_CONFIG
+#browsers = list(map(lambda data: Browser(config, data, tg_bot, http_client), form_data))
+mail_checkers = list(map(lambda data: start_mail_checker_thread(data['email'], store, config, tg_bot), form_data))
 logger.info("Started checking emails")
 
 metrics = Metrics(export_metrics=True)
-watcher = Watcher(tg_bot, http_client, browsers[0].url_start, browsers, metrics, use_say_cmd=False)
-watcher_thread = threading.Thread(target=watcher.start_loop, args=(None, 1), daemon=True)
+#watcher = Watcher(tg_bot, http_client, browsers[0].url_start, browsers, metrics, config, parallelism=1)
+watcher = WatcherMultislot(tg_bot, http_client, metrics, config, parallelism=1)
+watcher_thread = threading.Thread(target=watcher.start_loop, args=(None, ), daemon=True)
 watcher_thread.start()
 logger.info("Started watching for dates")
 
@@ -102,7 +97,7 @@ def store_authcode():
     if not request.headers.get('X-Requested-With'):
         abort(403)
     flow = Flow.from_client_secrets_file(
-        OAUTH2_CLIENT_SECRET_PATH,
+        CredentialsStore.OAUTH2_CLIENT_SECRET_PATH,
         scopes=[
             'openid',
             'https://www.googleapis.com/auth/userinfo.email',

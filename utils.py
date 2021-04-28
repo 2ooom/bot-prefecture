@@ -7,6 +7,7 @@ from datetime import datetime as dt
 
 SESSION_ID_COOKIE = 'eZSESSID'
 DUMPS_FOLDER = './dumps'
+WEBSITE_HOSTNAME = 'WEBSITE_HOSTNAME'
 
 def get_file_content(filepath):
     with open(filepath, "r") as f:
@@ -44,17 +45,5 @@ def save_html(html, name=None):
         f.write(html)
     return html_path
 
-def setup_logging(filepath):
-    root_logger = logging.getLogger()
-    root_logger.setLevel(logging.DEBUG)
-    formatter = logging.Formatter('%(asctime)s [%(levelname)-5.5s] [%(name)s] %(message)s', "%H:%M:%S")
-
-    fh = logging.FileHandler(filepath, mode='a')
-    fh.setFormatter(formatter)
-    fh.setLevel(logging.DEBUG)
-    root_logger.addHandler(fh)
-
-    ch = logging.StreamHandler()
-    ch.setFormatter(formatter)
-    ch.setLevel(logging.INFO)
-    root_logger.addHandler(ch)
+def now():
+    return dt.now().isoformat()

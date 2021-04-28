@@ -1,45 +1,44 @@
 
 import logging
-import os
 import time
-import sys
-import json
-import subprocess
+import os
 import threading
 import requests
+import concurrent.futures
 
 from http_client import HttpClient
-from users_data import form_data, anticaptcha_api_key
-from utils import get_file_content, save_html, SESSION_ID_COOKIE, DUMPS_FOLDER
+from users_data import anticaptcha_api_key
+from utils import save_html, SESSION_ID_COOKIE, WEBSITE_HOSTNAME
 from lxml import html
-from datetime import datetime as dt
 
 class Browser:
     NB_RETRIES = 5
+    NB_PARALLEL_CAPCHAS = 3
 
-    def __init__(self, config, form_data, tg_bot, http_client):
+    def __init__(self, config, tg_bot, http_client):
         self.url_base = f'{config.url}/booking/create/{config.form_id}'
         self.url_start = f'{self.url_base}/0'
-        self.form_data = form_data
         self.config = config
         self.tg_bot = tg_bot
-        self.user_email = form_data['email']
-        self.logger = logging.getLogger(f"Browser {self.user_email}")
+        self.logger = logging.getLogger("Browser")
         self.form_submit_started = False
         self.form_submit_lock = threading.Lock()
         self.logger.info(f'Page 1: Loading "{self.url_start}"')
-        response = requests.get(self.url_start, headers={"user-agent": HttpClient.USER_AGENT})
+        response = requests.get(self.url_start, headers=HttpClient.DEFAULT_HEADERS)
         self.session_id = response.cookies[SESSION_ID_COOKIE]
         self.log_step(f'🛫 Starting to watch for dates on {self.url_start}\nSessionId: `{self.session_id}`')
         self.http_client = http_client
-        self.rdv_taken = False
-        self.updated_state = False
+        self.capcha_executor = concurrent.futures.ThreadPoolExecutor(max_workers=Browser.NB_PARALLEL_CAPCHAS)
 
     def log_step(self, message):
         self.logger.warning(message)
-        self.tg_bot.send_to_admins("\n".join([f'`{self.user_email}`:', message]))
+        lines = [
+            f'🖥 `Host: {os.environ.get(WEBSITE_HOSTNAME)}; SessionId: {self.session_id}`:',
+            message
+        ]
+        self.tg_bot.send_to_admins("\n".join(lines))
 
-    def post(self, url, data):
+    def post(self, url, data, first_attempt_with_proxy=False):
         return self.http_client.req(
             'post',
             url,
@@ -49,14 +48,12 @@ class Browser:
                 "ogirin": url,
                 "referer": url,
             },
-            data=data
+            data=data,
+            first_attempt_with_proxy=first_attempt_with_proxy
         )
 
-    def update_internal_server_state(self):
-        if self.updated_state:
-            self.log_step('Step 0-3: skipping. Internal server state already updated.')
-            return
-        self.log_step('Step 0: Validating conditions')
+    def accept_conditions(self):
+        self.logger.info('Step 0: Validating conditions')
         page = self.post(
             self.url_start,
             {
@@ -64,6 +61,8 @@ class Browser:
                 'nextButton': 'Effectuer+une+demande+de+rendez-vous',
             }
         )
+        if not page:
+            raise Exception('Conditions not accepted. Bad request')
         tree = html.fromstring(page.content)
         next_button = tree.xpath("//input[@name='nextButton']")
         if not len(next_button):
@@ -72,29 +71,35 @@ class Browser:
         if next_button[0].value != "Etape suivante":
             save_html(page.content)
             raise Exception("Step 0: Dates not available :(")
+        self.log_step('✅ Step 0: Accepted conditions')
 
-        planning_input = tree.xpath("//input[@name='planning']")
-        # for test only
-        if len(planning_input):
-            self.log_step('Step 1: Selecting RDV type')
-            page = self.post(
-                f"{self.url_base}/1",
-                {
-                    'planning': planning_input[-1].attrib['value'],
-                    'nextButton': next_button[0].value,
-                }
-            )
-            tree = html.fromstring(page.content)
-            next_button = tree.xpath("//input[@name='nextButton']")
-            if not len(next_button):
-                save_html(page.content)
-                raise Exception('Step 1: Next button not found')
-            if next_button[0].value != "Etape suivante":
-                save_html(page.content)
-                raise Exception("Step 1: Dates not available :(")
-        else:
-            self.logger.info('Step 1: Implicit')
+    def check_planning_dates(self, planning_id, planning_title):
+        self.logger.debug(f'Step 1: Checking planning {planning_id}')
+        page = self.post(
+            f"{self.url_base}/1",
+            {
+                'planning': str(planning_id),
+                'nextButton': 'Etape suivante',
+            },
+            first_attempt_with_proxy=True
+        )
+        if not page:
+            return False
+        tree = html.fromstring(page.content)
+        etape3_active = tree.xpath("//img[contains(@src, '/etape_3r.png')]")
+        if len(etape3_active):
+            self.log_step(f'✅ Step 1: Dates available for "{planning_title}"')
+            save_html(page.content)
+            return True
+        finish_button = tree.xpath("//input[@name='finishButton']")
+        if finish_button[0].value == "Terminer":
+            self.logger.debug(f'Step 1: No dates {planning_title}')
+            return False
+        self.log_step(f'❓ Step 1: Anomaly detected for {planning_title}. Dumping html.')
+        save_html(page.content)
+        return False
 
+    def update_internal_server_state(self):
         self.log_step('Step 3: Submitting form and implicitly choosing RDV type')
         page = self.post(
             f"{self.url_base}/3",
@@ -105,16 +110,35 @@ class Browser:
         if not len(etape4_active):
             save_html(page.content)
             raise Exception("Step 3: Dates not available :(")
-        self.updated_state = True
+        self.log_step('✅  Step 3: Submitted')
+        save_html(page.content)
+        return page
 
-    def get_captcha_solution(self):
+    def choose_first_available(self):
+        self.log_step('Step 4: Choosing the first timeslot available')
+        page = self.post(
+            f"{self.url_base}/4",
+            {
+                'nextButton': 'Première+plage+horaire+libre'
+            }
+        )
+        tree = html.fromstring(page.content)
+        etape6_active = tree.xpath("//img[contains(@src, '/etape_6r.png')]")
+        if not len(etape6_active):
+            save_html(page.content)
+            raise Exception("Step 4: Dates not available :(")
+        save_html(page.content)
+        date_time = tree.xpath("//*[@id='inner_Booking']/fieldset")[0].text_content()
+        self.log_step('\n'.join(['✅  Step 4: Chosen date', f'```{date_time}```']))
+
+    def get_captcha_solution(self, index):
         task_resp = requests.post('https://api.anti-captcha.com/createTask', json={
             'clientKey' : anticaptcha_api_key,
             'task':
                 {
                     "type":"RecaptchaV2TaskProxyless",
                     "websiteURL": self.config.url,
-                    "websiteKey": self.config.recatcha_sitekey
+                    "websiteKey": self.config.recapcha_sitekey
                 }
         })
         task_id = task_resp.json()['taskId']
@@ -132,26 +156,40 @@ class Browser:
                 self.logger.warning(f'Anticaptcha status: {resp["status"]}. waiting 10 sec..')
 
         if not g_captcha_response:
-            raise Exception("Anticaptcha not solved in 2 min.")
+            raise Exception(f"Anticaptcha `{index}` `{task_id}` not solved in 2 min.")
+        self.log_step(f'✅ Anticaptcha `{index}` `{task_id}` solved')
         return g_captcha_response
 
-    def book_date(self, date_url):
+    def update_stare_while_solving_captcha(self, date_url):
+        self.log_step(f'Solving {Browser.NB_PARALLEL_CAPCHAS} anticaptcha(s) in parallel')
+        solvers = [self.capcha_executor.submit(self.get_captcha_solution, i) for i in range(Browser.NB_PARALLEL_CAPCHAS)]
+        self.accept_conditions()
+        self.update_internal_server_state()
         self.log_step(f'Step 4: Via Http getting "{date_url}"')
         page = self.http_client.get(
             date_url,
             max_retries=Browser.NB_RETRIES,
             cookies={SESSION_ID_COOKIE: self.session_id},
-            headers={
-                "ogirin": date_url,
-                "referer": date_url,
-            })
+            headers={"ogirin": date_url, "referer": date_url},
+            first_attempt_with_proxy=False)
         if not page:
             raise Exception('☠️ Step 4: Failed to load')
 
-        self.log_step(f'✅ Step 4: Via Http loaded {date_url}')
-        self.log_step('Step 6: Solving anticaptcha')
-        g_captcha_response = self.get_captcha_solution()
-        self.log_step('✅ Step 6: Anticaptcha solved')
+        tree = html.fromstring(page.content)
+        date_time = tree.xpath("//*[@id='inner_Booking']/fieldset")[0].text_content()
+        self.log_step('\n'.join([f'✅ Step 4: Via Http loaded {date_url}:', f'```{date_time}```']))
+        (solved, _) = concurrent.futures.wait(solvers, return_when='FIRST_COMPLETED')
+        return list(solved)[0].result()
+
+    def choose_first_date_while_solving_captcha(self):
+        self.log_step(f'Solving {Browser.NB_PARALLEL_CAPCHAS} anticaptcha(s) in parallel')
+        solvers = [self.capcha_executor.submit(self.get_captcha_solution, i) for i in range(Browser.NB_PARALLEL_CAPCHAS)]
+        self.update_internal_server_state()
+        self.choose_first_available()
+        (solved, _) = concurrent.futures.wait(solvers, return_when='FIRST_COMPLETED')
+        return list(solved)[0].result()
+
+    def book_date(self, g_captcha_response, form_data):
         page = self.post(
             f"{self.url_base}/6",
             {
@@ -167,11 +205,12 @@ class Browser:
             save_html(page.content)
             raise Exception("☠️ Step 6: Dates not available :(")
         self.log_step('✅ Step 6: Anticaptcha accepted')
-        self.log_step('Step 8: Submitting form')
+        user_email = form_data['email']
+        self.log_step(f'Step 8: Submitting form for `{user_email}`')
         page = self.post(
             f"{self.url_base}/8",
             {
-                **self.form_data,
+                **form_data,
                 'nextButton': 'Etape+suivante'
             })
         tree = html.fromstring(page.content)
@@ -180,26 +219,27 @@ class Browser:
             save_html(page.content)
             self.log_step('☠️ Step 8: Not submitted :(')
             raise Exception('☠️ Step 8: Message not sent')
-        self.log_step('✅ Step 8: Submitted. Check email')
+        self.log_step('✅ Step 8: Submitted. Check email `{user_email}`')
 
-    def submit_form(self, date_url, date_chosen, timestamp):
+    def submit_form(self, date_url, date_chosen, timestamp, form_data):
+        try:
+            self.log_step(f'Form submit started. Date: {date_chosen} (unix timestamp: {timestamp})')
+            g_captcha_response = self.update_stare_while_solving_captcha(date_url)
+            self.book_date(g_captcha_response, form_data)
+
+            self.log_step(f'💚 RDV Taken @ `{date_chosen}` (unix timestamp: {timestamp})')
+        except Exception as err:
+            self.logger.error("phfew. Error: ")
+            self.logger.exception(err)
+
+    def submit_form_with_lock(self, date_url, date_chosen, timestamp, form_data):
         with self.form_submit_lock:
             if self.form_submit_started:
                 self.logger.info('Form submit already started. Skipping...')
                 return
             else:
                 self.form_submit_started = True
-        try:
-            self.log_step(f'Form submit started. Date: {date_chosen} (unix timestamp: {timestamp})')
-            self.update_internal_server_state()
-            self.book_date(date_url)
-
-            self.log_step(f'💚 RDV Taken @ `{date_chosen}` (unix timestamp: {timestamp})')
-            self.rdv_taken = True
-        except Exception as err:
-            self.logger.error("phfew. Error: ")
-            self.logger.exception(err)
+        self.submit_form(date_url, date_chosen, timestamp, form_data)
         with self.form_submit_lock:
             self.logger.warning('Resetting form submit status')
             self.form_submit_started = False
-
