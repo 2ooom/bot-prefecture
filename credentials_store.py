@@ -3,14 +3,17 @@ import json
 import logging
 from utils import get_json_file_content
 
-import google.auth
+import google.oauth2.credentials
 from google.auth.transport.requests import Request as GoogleRequest
 from google.oauth2 import id_token
 
 class CredentialsStore:
-    def __init__(self, secrets_path, credentials_path):
-        self.oauth_secrets = get_json_file_content(secrets_path)['web']
-        self.credentials_path = credentials_path
+    OAUTH2_CLIENT_SECRET_PATH = './google_client_secret.json'
+    OATH2_CREDENTIALS_STORE = './credentials.json'
+
+    def __init__(self):
+        self.oauth_secrets = get_json_file_content(CredentialsStore.OAUTH2_CLIENT_SECRET_PATH)['web']
+        self.credentials_path = CredentialsStore.OATH2_CREDENTIALS_STORE
         self.logger = logging.getLogger(f"CredentialsStore")
 
     def get_credentials(self, email):
