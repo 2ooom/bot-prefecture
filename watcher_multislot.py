@@ -31,13 +31,14 @@ class WatcherMultislot(Watcher):
 
     def check_once(self, browser, planning_id, slot_logger):
         slot_logger.debug('Step 3: Submitting form and implicitly choosing RDV type')
-        if not browser.check_planning_dates(planning_id, self.planning_titles[planning_id]):
+        page = browser.book_first_available(planning_id, self.planning_titles[planning_id])
+        if not page:
             self.global_failed_req_counter += 1
             time.sleep(Watcher.DELAY_IF_NOT_FOUND_SEC)
             return
 
         if self.form_data_index < len(form_data):
-            g_captcha_response = browser.choose_first_date_while_solving_captcha()
+            g_captcha_response = browser.choose_first_date_while_solving_captcha(page)
             browser.book_date(g_captcha_response, form_data[self.form_data_index])
             self.tg_bot.send_to_admins(f'💚 RDV Taken for `{form_data[self.form_data_index]["email"]}` check email')
             self.form_data_index += 1

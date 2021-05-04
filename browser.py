@@ -52,6 +52,33 @@ class Browser:
             first_attempt_with_proxy=first_attempt_with_proxy
         )
 
+    def check_planning_dates(self, planning_id, planning_title):
+        self.logger.debug(f'Step 1: Checking planning {planning_id}')
+        page = self.post(
+            f"{self.url_base}/1",
+            {
+                'planning': str(planning_id),
+                'nextButton': 'Etape suivante',
+            },
+            first_attempt_with_proxy=True
+        )
+        if not page:
+            return page
+        tree = html.fromstring(page.content)
+        etape3_active = tree.xpath("//img[contains(@src, '/etape_3r.png')]")
+        etape4_active = tree.xpath("//img[contains(@src, '/etape_4r.png')]")
+        if len(etape3_active) or len(len(etape4_active)):
+            self.log_step(f'✅ Step 1: Dates available for "{planning_title}"')
+            save_html(page.content)
+            return page
+        finish_button = tree.xpath("//input[@name='finishButton']")
+        if finish_button[0].value == "Terminer":
+            self.logger.debug(f'Step 1: No dates {planning_title}')
+            return page
+        self.log_step(f'❓ Step 1: Anomaly detected for {planning_title}. Dumping html.')
+        save_html(page.content)
+        return page
+
     def accept_conditions(self):
         self.logger.info('Step 0: Validating conditions')
         page = self.post(
@@ -68,38 +95,22 @@ class Browser:
         if not len(next_button):
             save_html(page.content)
             raise Exception("Step 0: Next button not found")
+        return page
+
+    def update_internal_server_state(self, previous_page):
+        tree = html.fromstring(previous_page.content)
+        forms = tree.xpath("//form[@id='FormBookingCreate']")
+        if len(forms) and forms[0].attrib['action'].endswith('/4'):
+            save_html(page.content)
+            self.log_step('✅ Step 0 and 3: Accepted conditions and RDV type chosen')
+            return
+
+        next_button = tree.xpath("//input[@name='nextButton']")
         if next_button[0].value != "Etape suivante":
             save_html(page.content)
             raise Exception("Step 0: Dates not available :(")
         self.log_step('✅ Step 0: Accepted conditions')
 
-    def check_planning_dates(self, planning_id, planning_title):
-        self.logger.debug(f'Step 1: Checking planning {planning_id}')
-        page = self.post(
-            f"{self.url_base}/1",
-            {
-                'planning': str(planning_id),
-                'nextButton': 'Etape suivante',
-            },
-            first_attempt_with_proxy=True
-        )
-        if not page:
-            return False
-        tree = html.fromstring(page.content)
-        etape3_active = tree.xpath("//img[contains(@src, '/etape_3r.png')]")
-        if len(etape3_active):
-            self.log_step(f'✅ Step 1: Dates available for "{planning_title}"')
-            save_html(page.content)
-            return True
-        finish_button = tree.xpath("//input[@name='finishButton']")
-        if finish_button[0].value == "Terminer":
-            self.logger.debug(f'Step 1: No dates {planning_title}')
-            return False
-        self.log_step(f'❓ Step 1: Anomaly detected for {planning_title}. Dumping html.')
-        save_html(page.content)
-        return False
-
-    def update_internal_server_state(self):
         self.log_step('Step 3: Submitting form and implicitly choosing RDV type')
         page = self.post(
             f"{self.url_base}/3",
@@ -112,7 +123,6 @@ class Browser:
             raise Exception("Step 3: Dates not available :(")
         self.log_step('✅  Step 3: Submitted')
         save_html(page.content)
-        return page
 
     def choose_first_available(self):
         self.log_step('Step 4: Choosing the first timeslot available')
@@ -160,11 +170,11 @@ class Browser:
         self.log_step(f'✅ Anticaptcha `{index}` `{task_id}` solved')
         return g_captcha_response
 
-    def update_stare_while_solving_captcha(self, date_url):
+    def update_state_while_solving_captcha(self, date_url):
         self.log_step(f'Solving {Browser.NB_PARALLEL_CAPCHAS} anticaptcha(s) in parallel')
         solvers = [self.capcha_executor.submit(self.get_captcha_solution, i) for i in range(Browser.NB_PARALLEL_CAPCHAS)]
-        self.accept_conditions()
-        self.update_internal_server_state()
+        page = self.accept_conditions()
+        self.update_internal_server_state(page)
         self.log_step(f'Step 4: Via Http getting "{date_url}"')
         page = self.http_client.get(
             date_url,
@@ -181,10 +191,10 @@ class Browser:
         (solved, _) = concurrent.futures.wait(solvers, return_when='FIRST_COMPLETED')
         return list(solved)[0].result()
 
-    def choose_first_date_while_solving_captcha(self):
+    def choose_first_date_while_solving_captcha(self, page):
         self.log_step(f'Solving {Browser.NB_PARALLEL_CAPCHAS} anticaptcha(s) in parallel')
         solvers = [self.capcha_executor.submit(self.get_captcha_solution, i) for i in range(Browser.NB_PARALLEL_CAPCHAS)]
-        self.update_internal_server_state()
+        self.update_internal_server_state(page)
         self.choose_first_available()
         (solved, _) = concurrent.futures.wait(solvers, return_when='FIRST_COMPLETED')
         return list(solved)[0].result()
@@ -224,7 +234,7 @@ class Browser:
     def submit_form(self, date_url, date_chosen, timestamp, form_data):
         try:
             self.log_step(f'Form submit started. Date: {date_chosen} (unix timestamp: {timestamp})')
-            g_captcha_response = self.update_stare_while_solving_captcha(date_url)
+            g_captcha_response = self.update_state_while_solving_captcha(date_url)
             self.book_date(g_captcha_response, form_data)
 
             self.log_step(f'💚 RDV Taken @ `{date_chosen}` (unix timestamp: {timestamp})')
