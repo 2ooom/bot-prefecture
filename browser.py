@@ -101,7 +101,7 @@ class Browser:
         tree = html.fromstring(previous_page.content)
         forms = tree.xpath("//form[@id='FormBookingCreate']")
         if len(forms) and forms[0].attrib['action'].endswith('/4'):
-            save_html(page.content)
+            save_html(previous_page.content)
             self.log_step('✅ Step 0 and 3: Accepted conditions and RDV type chosen')
             return
 
