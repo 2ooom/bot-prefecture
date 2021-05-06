@@ -45,7 +45,7 @@ class Browser:
             max_retries=Browser.NB_RETRIES,
             cookies={SESSION_ID_COOKIE: self.session_id},
             headers={
-                "ogirin": url,
+                "origin": url,
                 "referer": url,
             },
             data=data,
@@ -67,7 +67,7 @@ class Browser:
         tree = html.fromstring(page.content)
         etape3_active = tree.xpath("//img[contains(@src, '/etape_3r.png')]")
         etape4_active = tree.xpath("//img[contains(@src, '/etape_4r.png')]")
-        if len(etape3_active) or len(len(etape4_active)):
+        if len(etape3_active) or len(etape4_active):
             self.log_step(f'✅ Step 1: Dates available for "{planning_title}"')
             save_html(page.content)
             return page
@@ -180,7 +180,7 @@ class Browser:
             date_url,
             max_retries=Browser.NB_RETRIES,
             cookies={SESSION_ID_COOKIE: self.session_id},
-            headers={"ogirin": date_url, "referer": date_url},
+            headers={"origin": date_url, "referer": date_url},
             first_attempt_with_proxy=False)
         if not page:
             raise Exception('☠️ Step 4: Failed to load')
@@ -224,7 +224,7 @@ class Browser:
                 'nextButton': 'Etape+suivante'
             })
         tree = html.fromstring(page.content)
-        message_sent = tree.xpath("//li[contains(text(), 'Vous disposez de 60 minutes pour confirmer')]")
+        message_sent = tree.xpath("//li[contains(text(), 'Vous disposez de') and contains(text(), 'minutes pour confirmer')]")
         if not len(message_sent):
             save_html(page.content)
             self.log_step('☠️ Step 8: Not submitted :(')
