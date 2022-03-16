@@ -25,7 +25,7 @@ so it's firing requests as soon as possible (~1 second) making it pretty easy to
 ### Telegram notifications
 Appointment dates often appear at random times and you won't be sitting in from of your computer, so it's having reactive notification system helps a lot.
 To set up Telegram bot:
-1. Create bot via `@BothFather` following these [instructions](https://core.telegram.org/bots#3-how-do-i-create-a-bot).
+1. Create bot via `@BotFather` following these [instructions](https://core.telegram.org/bots#3-how-do-i-create-a-bot).
 2. Update `telegram_bot_token` with HTTP API Key (retrieved in previous step) in `user_data.py`
 
 ### Captcha validation
